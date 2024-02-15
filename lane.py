@@ -3,12 +3,19 @@
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
+import logging
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
 
 rho = 1
 theta = np.pi / 180
-threshold = 20
-minLineLength = 20
-maxLineGap = 300
+threshold = 30
+minLineLength = 10
+maxLineGap = 150
+min_area = 1800  # Minimum area of the contour to be considered
+max_area = 50000  # Maximum area of the contour to be considered
+aspect_ratio_range = (0.8, 1.2)  # Acceptable aspect ratio range for contours
 
 
 def list_images(images, cols=2, rows=5, cmap=None):
@@ -44,7 +51,7 @@ def RGB_color_selection(image):
     white_mask = cv2.inRange(image, lower_threshold, upper_threshold)
 
     # Yellow color mask
-    lower_threshold = np.uint8([175, 175, 0])
+    lower_threshold = np.uint8([0, 0, 200])
     upper_threshold = np.uint8([255, 255, 255])
     yellow_mask = cv2.inRange(image, lower_threshold, upper_threshold)
 
@@ -70,7 +77,7 @@ def HSV_color_selection(image):
     white_mask = cv2.inRange(converted_image, lower_threshold, upper_threshold)
 
     # Yellow color mask
-    lower_threshold = np.uint8([18, 80, 80])
+    lower_threshold = np.uint8([0, 0, 200])
     upper_threshold = np.uint8([30, 255, 255])
     yellow_mask = cv2.inRange(converted_image, lower_threshold, upper_threshold)
 
@@ -174,24 +181,6 @@ def hough_transform(image):
                            minLineLength=minLineLength, maxLineGap=maxLineGap)
 
 
-def draw_lines(image, lines, color=None, thickness=2):
-    """
-    Draw lines onto the input image.
-        Parameters:
-            image: An np.array compatible with plt.imshow.
-            lines: The lines we want to draw.
-            color (Default = red): Line color.
-            thickness (Default = 2): Line thickness.
-    """
-    if color is None:
-        color = [255, 0, 0]
-    image = np.copy(image)
-    for line in lines:
-        for x1, y1, x2, y2 in line:
-            cv2.line(image, (x1, y1), (x2, y2), color, thickness)
-    return image
-
-
 def average_slope_intercept(lines):
     """
     Find the slope and intercept of the left and right lanes of each image.
@@ -210,12 +199,12 @@ def average_slope_intercept(lines):
             intercept = y1 - slope * x1
             length = np.sqrt((y2 - y1) ** 2 + (x2 - x1) ** 2)
             if slope < 0:
-                if slope > -0.45 or slope < -0.85:
+                if slope > -1.1 or slope < -2.5:
                     continue
                 left_lines.append((slope, intercept))
                 left_weights.append(length)
             else:
-                if slope < 0.45 or slope > 0.85:
+                if slope < 0.45 or slope > 0.9:
                     continue
                 right_lines.append((slope, intercept))
                 right_weights.append(length)
@@ -254,7 +243,7 @@ def lane_lines(image, lines):
     """
     left_lane, right_lane = average_slope_intercept(lines)
     y1 = image.shape[0]  # Bottom of the image
-    y2 = y1 * 0.6  # Adjust this to change the line length
+    y2 = y1 * 0.9  # Adjust this to change the line length
     left_line = pixel_points(y1, y2, left_lane)
     right_line = pixel_points(y1, y2, right_lane)
     return left_line, right_line
@@ -270,7 +259,7 @@ def draw_lane_lines(image, lines, color=None, thickness=12):
             thickness (Default = 12): Line thickness.
     """
     if color is None:
-        color = [255, 0, 0]
+        color = [0, 0, 255]
     line_image = np.zeros_like(image)
     for line in lines:
         if line is not None:
@@ -278,20 +267,38 @@ def draw_lane_lines(image, lines, color=None, thickness=12):
     return cv2.addWeighted(image, 1.0, line_image, 1.0, 0.0)
 
 
-def frame_processor(image):
+def draw_crosswords(frame, edges):
+    contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+
+    height = frame.shape[0]  # Get the height of the frame
+    max_y_from_bottom = height - 110  # Calculate the max y-coordinate from the bottom
+
+    # Filter contours and draw them
+    for contour in contours:
+        x, y, w, h = cv2.boundingRect(contour)
+
+        # Check if the contour is within the desired height
+        if y + h >= max_y_from_bottom:
+            epsilon = 0.1 * cv2.arcLength(contour, True)
+            approx = cv2.approxPolyDP(contour, epsilon, True)
+            area = cv2.contourArea(contour)
+            if len(approx) >= 4 and min_area <= area <= max_area:
+                cv2.drawContours(frame, [contour], 0, (0, 255, 0), 3)
+
+
+def significant_change(previous_lane, current_lane, min_slope_threshold=89, max_slope_threshold=91):
     """
-    Process the input frame to detect lane lines.
-        Parameters:
-            image: Single video frame.
+    Determine if there's a significant change in lane position.
     """
-    color_select = HSL_color_selection(image)
-    gray = cv2.cvtColor(color_select, cv2.COLOR_RGB2GRAY)
-    smooth = gaussian_smoothing(gray)
-    edges = canny_detector(smooth)
-    region = region_selection(edges)
-    hough = hough_transform(region)
-    result = draw_lane_lines(image, lane_lines(image, hough))
-    return result
+    if previous_lane[0] and current_lane[0]:
+        prev_slope, prev_intercept = previous_lane[0]
+        curr_slope, curr_intercept = current_lane[0]
+
+        # Calculate the change in slope and intercept
+        slope_change = abs(curr_slope - prev_slope)
+
+        return min_slope_threshold < slope_change < max_slope_threshold
+    return False
 
 
 def process_frame(frame):
@@ -306,13 +313,14 @@ def process_frame(frame):
     edges = canny_detector(smooth)
     region = region_selection(edges)
     hough = hough_transform(region)
-    lines = lane_lines(frame, hough)
-    result = draw_lane_lines(frame, lines)
-    return result
+    my_lines = lane_lines(frame, hough)
+    draw_crosswords(frame, edges)
+    result = draw_lane_lines(frame, my_lines)
+    return result, my_lines
 
 
 # Main video processing loop
-video_file = 'car_driving.mp4'
+video_file = 'car_driving_short.mp4'
 cap = cv2.VideoCapture(video_file)
 
 # Check if video opened successfully
@@ -327,11 +335,31 @@ frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 fourcc = cv2.VideoWriter_fourcc(*'XVID')
 out = cv2.VideoWriter('output.avi', fourcc, 20.0, (frame_width, frame_height))
 
+previous_left_lane = None
+previous_right_lane = None
+frame_counter = 0
+
 while cap.isOpened():
     ret, frame = cap.read()
     if ret:
         # Process the frame
-        processed_frame = process_frame(frame)
+        processed_frame, lines = process_frame(frame)
+
+        left_line, right_line = lines
+
+        if frame_counter > 0:  # Skip comparison for the first frame
+            if left_line and previous_left_lane:
+                # Compare slopes and intercepts for left lane
+                if significant_change(previous_left_lane, left_line):
+                    logging.info("Significant movement detected in left lane.")
+
+            if right_line and previous_right_lane:
+                # Compare slopes and intercepts for right lane
+                if significant_change(previous_right_lane, right_line):
+                    logging.info("Significant movement detected in right lane.")
+
+        previous_left_lane, previous_right_lane = left_line, right_line
+        frame_counter += 1
 
         # Write the frame into the output file
         out.write(processed_frame)
