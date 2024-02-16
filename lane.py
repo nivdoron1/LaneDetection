@@ -4,10 +4,24 @@ import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import logging
+import LaneLineHistory
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Main video processing loop
+video_file = 'car_driving_short.mp4'
+cap = cv2.VideoCapture(video_file)
 
+# Check if video opened successfully
+if not cap.isOpened():
+    print("Error opening video file")
 
+# Get frame size for video writer
+frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+previous_left_lane = None
+previous_right_lane = None
+frame_counter = 0
+lane_line_history = LaneLineHistory.LaneLineHistory()
 rho = 1
 theta = np.pi / 180
 threshold = 30
@@ -209,11 +223,44 @@ def average_slope_intercept(lines):
                 right_lines.append((slope, intercept))
                 right_weights.append(length)
 
-    # More robust averaging (e.g., median or mode) could be applied here
     left_lane = np.dot(left_weights, left_lines) / np.sum(left_weights) if len(left_weights) > 0 else None
     right_lane = np.dot(right_weights, right_lines) / np.sum(right_weights) if len(right_weights) > 0 else None
+    # left_lane, right_lane = make_lines_parallel(left_lane, right_lane)
+    return get_average_history(left_lane, right_lane)
 
-    return left_lane, right_lane
+
+def make_lines_parallel(left_lane, right_lane):
+    """
+    Adjust the left and right lane lines to make them parallel by recalculating their intercepts.
+
+    Parameters:
+        left_lane: The slope and intercept of the left lane line.
+        right_lane: The slope and intercept of the right lane line.
+
+    Returns:
+        Tuple containing the adjusted left and right lanes.
+    """
+    if left_lane is None or right_lane is None:
+        return left_lane, right_lane
+
+    # Calculate the average slope
+    average_slope = (left_lane[0] + right_lane[0]) / 2
+
+    # Find the y-intercept of the left lane at the bottom of the image
+    left_intercept_at_bottom = frame_height - (average_slope * 0 + left_lane[1])
+
+    # Find the y-intercept of the right lane at the bottom of the image
+    right_intercept_at_bottom = frame_height - (average_slope * frame_width + right_lane[1])
+
+    # Calculate new intercepts to keep the lines parallel and at the same height from the bottom
+    new_left_intercept = left_intercept_at_bottom - average_slope * 0
+    new_right_intercept = right_intercept_at_bottom - average_slope * frame_width
+
+    # Adjust the intercepts while keeping the average slope
+    adjusted_left_lane = (average_slope, new_left_intercept)
+    adjusted_right_lane = (average_slope, new_right_intercept)
+
+    return adjusted_left_lane, adjusted_right_lane
 
 
 def pixel_points(y1, y2, line):
@@ -243,7 +290,7 @@ def lane_lines(image, lines):
     """
     left_lane, right_lane = average_slope_intercept(lines)
     y1 = image.shape[0]  # Bottom of the image
-    y2 = y1 * 0.9  # Adjust this to change the line length
+    y2 = y1 * 0.8  # Adjust this to change the line length
     left_line = pixel_points(y1, y2, left_lane)
     right_line = pixel_points(y1, y2, right_lane)
     return left_line, right_line
@@ -284,6 +331,15 @@ def draw_crosswords(frame, edges):
             area = cv2.contourArea(contour)
             if len(approx) >= 4 and min_area <= area <= max_area:
                 cv2.drawContours(frame, [contour], 0, (0, 255, 0), 3)
+                center_message_counter[0] = 12
+
+
+def draw_text(width, height, text):
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    text_size = cv2.getTextSize(text, font, 1, 2)[0]
+    text_x = (width - text_size[0]) // 2
+    text_y = (height + text_size[1]) // 2
+    cv2.putText(frame, text, (text_x, text_y), font, 1, (0, 255, 255), 2)
 
 
 def significant_change(previous_lane, current_lane, min_slope_threshold=89, max_slope_threshold=91):
@@ -296,7 +352,7 @@ def significant_change(previous_lane, current_lane, min_slope_threshold=89, max_
 
         # Calculate the change in slope and intercept
         slope_change = abs(curr_slope - prev_slope)
-
+        # lane_line_history.reset_history()
         return min_slope_threshold < slope_change < max_slope_threshold
     return False
 
@@ -314,36 +370,57 @@ def process_frame(frame):
     region = region_selection(edges)
     hough = hough_transform(region)
     my_lines = lane_lines(frame, hough)
+    # my_lines = get_average_history(my_lines)
     draw_crosswords(frame, edges)
+    draw_text_arrow()
     result = draw_lane_lines(frame, my_lines)
     return result, my_lines
 
 
-# Main video processing loop
-video_file = 'car_driving_short.mp4'
-cap = cv2.VideoCapture(video_file)
+def get_average_history(left_line, right_line):
+    # If a line is not detected, use the average of the last 24 lines
+    if left_line is None or right_line is None:
+        avg_left_line, avg_right_line = lane_line_history.get_average_line()
+        if left_line is None and avg_left_line is not None:
+            left_line = avg_left_line
+        if right_line is None and avg_right_line is not None:
+            right_line = avg_right_line
+    # Update the history
+    lane_line_history.add_line(left_line, right_line)
+    return left_line, right_line
 
-# Check if video opened successfully
-if not cap.isOpened():
-    print("Error opening video file")
 
-# Get frame size for video writer
-frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+def draw_text_arrow():
+    if left_message_counter[0] == 24 or right_message_counter[0] == 24:
+        print('24')
+        lane_line_history.reset_history()
+
+    if left_message_counter[0] > 0:
+        draw_text(frame_width, frame_height, "Left")
+        left_message_counter[0] -= 1
+
+    if right_message_counter[0] > 0:
+        draw_text(frame_width, frame_height, "Right")
+        right_message_counter[0] -= 1
+
+    if center_message_counter[0] > 0:
+        draw_text(frame_width, frame_height, "Crosswalk")
+        right_message_counter[0] -= 1
+        draw_text(width=frame_width, height=frame_height, text="Crosswalk")
+
 
 # Define the codec and create VideoWriter object
 fourcc = cv2.VideoWriter_fourcc(*'XVID')
 out = cv2.VideoWriter('output.avi', fourcc, 20.0, (frame_width, frame_height))
-
-previous_left_lane = None
-previous_right_lane = None
-frame_counter = 0
-
+left_message_counter = [0]  # Use list to pass by reference
+right_message_counter = [0]
+center_message_counter = [0]
 while cap.isOpened():
     ret, frame = cap.read()
     if ret:
         # Process the frame
         processed_frame, lines = process_frame(frame)
+        # Conditionally draw text based on message counters right before displaying or writing the frame
 
         left_line, right_line = lines
 
@@ -351,16 +428,19 @@ while cap.isOpened():
             if left_line and previous_left_lane:
                 # Compare slopes and intercepts for left lane
                 if significant_change(previous_left_lane, left_line):
-                    logging.info("Significant movement detected in left lane.")
+                    right_message_counter[0] = 24  # Set to display message for 24 frames for left lane change
+                    print(left_message_counter[0])
+                    logging.info("Significant movement detected in right lane.")
 
             if right_line and previous_right_lane:
                 # Compare slopes and intercepts for right lane
                 if significant_change(previous_right_lane, right_line):
-                    logging.info("Significant movement detected in right lane.")
+                    left_message_counter[0] = 24  # Set to display message for 24 frames for right lane change
+                    print(right_message_counter[0])
+                    logging.info("Significant movement detected in left lane.")
 
         previous_left_lane, previous_right_lane = left_line, right_line
         frame_counter += 1
-
         # Write the frame into the output file
         out.write(processed_frame)
 
