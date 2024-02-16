@@ -8,8 +8,12 @@ import LaneLineHistory
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 # Main video processing loop
+
 video_file = 'car_driving_short.mp4'
 cap = cv2.VideoCapture(video_file)
+left_image = cv2.imread('arrow.png', cv2.IMREAD_UNCHANGED)
+left_image = cv2.cvtColor(left_image, cv2.COLOR_BGR2RGB)
+left_image[left_image > 240] = 0
 
 # Check if video opened successfully
 if not cap.isOpened():
@@ -30,6 +34,7 @@ maxLineGap = 150
 min_area = 1800  # Minimum area of the contour to be considered
 max_area = 50000  # Maximum area of the contour to be considered
 aspect_ratio_range = (0.8, 1.2)  # Acceptable aspect ratio range for contours
+kernel_size = 13
 
 
 def list_images(images, cols=2, rows=5, cmap=None):
@@ -137,17 +142,6 @@ def gray_scale(image):
     return cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
 
 
-def gaussian_smoothing(image, kernel_size=13):
-    """
-    Apply Gaussian filter to the input image.
-        Parameters:
-            image: An np.array compatible with plt.imshow.
-            kernel_size (Default = 13): The size of the Gaussian kernel will affect the performance of the detector.
-            It must be an odd number (3, 5, 7, ...).
-    """
-    return cv2.GaussianBlur(image, (kernel_size, kernel_size), 0)
-
-
 def canny_detector(image, low_threshold=50, high_threshold=150):
     """
     Apply Canny Edge Detection algorithm to the input image.
@@ -166,14 +160,11 @@ def region_selection(image):
             image: An np.array compatible with plt.imshow.
     """
     mask = np.zeros_like(image)
-    # Defining a 3 channel or 1 channel color to fill the mask with depending on the input image
     if len(image.shape) > 2:
         channel_count = image.shape[2]
         ignore_mask_color = (255,) * channel_count
     else:
         ignore_mask_color = 255
-    # We could have used fixed numbers as the vertices of the polygon,
-    # but they will not be applicable to images with different dimesnions.
     rows, cols = image.shape[:2]
     bottom_left = [cols * 0.1, rows * 0.95]
     top_left = [cols * 0.4, rows * 0.6]
@@ -195,20 +186,22 @@ def hough_transform(image):
                            minLineLength=minLineLength, maxLineGap=maxLineGap)
 
 
-def average_slope_intercept(lines):
+def average_slope_intercept(lines, slope_threshold=0.3):
     """
     Find the slope and intercept of the left and right lanes of each image.
         Parameters:
             lines: The output lines from Hough Transform.
+            :param slope_threshold:
     """
-    left_lines = []  # (slope, intercept)
-    left_weights = []  # (length,)
-    right_lines = []  # (slope, intercept)
-    right_weights = []  # (length,)
+    left_lines = []
+    left_weights = []
+    right_lines = []
+    right_weights = []
 
     for line in lines:
         for x1, y1, x2, y2 in line:
-            if x1 == x2: continue
+            if x1 == x2:
+                continue
             slope = (y2 - y1) / (x2 - x1)
             intercept = y1 - slope * x1
             length = np.sqrt((y2 - y1) ** 2 + (x2 - x1) ** 2)
@@ -225,42 +218,23 @@ def average_slope_intercept(lines):
 
     left_lane = np.dot(left_weights, left_lines) / np.sum(left_weights) if len(left_weights) > 0 else None
     right_lane = np.dot(right_weights, right_lines) / np.sum(right_weights) if len(right_weights) > 0 else None
-    # left_lane, right_lane = make_lines_parallel(left_lane, right_lane)
+    if left_lane is not None and right_lane is not None:
+        left_slope = left_lane[0]
+        right_slope = right_lane[0]
+        if abs(left_slope - right_slope) > slope_threshold:
+            left_lane = None
+
     return get_average_history(left_lane, right_lane)
 
 
-def make_lines_parallel(left_lane, right_lane):
-    """
-    Adjust the left and right lane lines to make them parallel by recalculating their intercepts.
-
-    Parameters:
-        left_lane: The slope and intercept of the left lane line.
-        right_lane: The slope and intercept of the right lane line.
-
-    Returns:
-        Tuple containing the adjusted left and right lanes.
-    """
-    if left_lane is None or right_lane is None:
-        return left_lane, right_lane
-
-    # Calculate the average slope
-    average_slope = (left_lane[0] + right_lane[0]) / 2
-
-    # Find the y-intercept of the left lane at the bottom of the image
-    left_intercept_at_bottom = frame_height - (average_slope * 0 + left_lane[1])
-
-    # Find the y-intercept of the right lane at the bottom of the image
-    right_intercept_at_bottom = frame_height - (average_slope * frame_width + right_lane[1])
-
-    # Calculate new intercepts to keep the lines parallel and at the same height from the bottom
-    new_left_intercept = left_intercept_at_bottom - average_slope * 0
-    new_right_intercept = right_intercept_at_bottom - average_slope * frame_width
-
-    # Adjust the intercepts while keeping the average slope
-    adjusted_left_lane = (average_slope, new_left_intercept)
-    adjusted_right_lane = (average_slope, new_right_intercept)
-
-    return adjusted_left_lane, adjusted_right_lane
+def fix_slope_lines(left_slope, right_slope, left_lane, right_lane, slope_threshold=0.3):
+    if abs(left_slope - right_slope) > slope_threshold:
+        left_lane = None  # Discard left lane if slope difference exceeds threshold
+        left_lane, right_lane = get_average_history(left_lane, right_lane)
+        if abs(left_slope - right_slope) > slope_threshold:
+            right_lane = None
+        else:
+            return left_lane, right_lane
 
 
 def pixel_points(y1, y2, line):
@@ -289,11 +263,9 @@ def lane_lines(image, lines):
             lines: The output lines from Hough Transform.
     """
     left_lane, right_lane = average_slope_intercept(lines)
-    y1 = image.shape[0]  # Bottom of the image
-    y2 = y1 * 0.8  # Adjust this to change the line length
-    left_line = pixel_points(y1, y2, left_lane)
-    right_line = pixel_points(y1, y2, right_lane)
-    return left_line, right_line
+    y1 = image.shape[0]
+    y2 = y1 * 0.8
+    return pixel_points(y1, y2, left_lane), pixel_points(y1, y2, right_lane)
 
 
 def draw_lane_lines(image, lines, color=None, thickness=12):
@@ -314,11 +286,11 @@ def draw_lane_lines(image, lines, color=None, thickness=12):
     return cv2.addWeighted(image, 1.0, line_image, 1.0, 0.0)
 
 
-def draw_crosswords(frame, edges):
+def draw_crosswalks(frame, edges):
     contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
 
-    height = frame.shape[0]  # Get the height of the frame
-    max_y_from_bottom = height - 110  # Calculate the max y-coordinate from the bottom
+    height = frame.shape[0]
+    max_y_from_bottom = height - 110
 
     # Filter contours and draw them
     for contour in contours:
@@ -352,7 +324,6 @@ def significant_change(previous_lane, current_lane, min_slope_threshold=89, max_
 
         # Calculate the change in slope and intercept
         slope_change = abs(curr_slope - prev_slope)
-        # lane_line_history.reset_history()
         return min_slope_threshold < slope_change < max_slope_threshold
     return False
 
@@ -365,13 +336,12 @@ def process_frame(frame):
     """
     color_select = HSL_color_selection(frame)
     gray = gray_scale(color_select)
-    smooth = gaussian_smoothing(gray)
+    smooth = cv2.GaussianBlur(gray, (kernel_size, kernel_size), 0)
     edges = canny_detector(smooth)
     region = region_selection(edges)
     hough = hough_transform(region)
     my_lines = lane_lines(frame, hough)
-    # my_lines = get_average_history(my_lines)
-    draw_crosswords(frame, edges)
+    draw_crosswalks(frame, edges)
     draw_text_arrow()
     result = draw_lane_lines(frame, my_lines)
     return result, my_lines
@@ -392,7 +362,6 @@ def get_average_history(left_line, right_line):
 
 def draw_text_arrow():
     if left_message_counter[0] == 24 or right_message_counter[0] == 24:
-        print('24')
         lane_line_history.reset_history()
 
     if left_message_counter[0] > 0:
@@ -404,8 +373,7 @@ def draw_text_arrow():
         right_message_counter[0] -= 1
 
     if center_message_counter[0] > 0:
-        draw_text(frame_width, frame_height, "Crosswalk")
-        right_message_counter[0] -= 1
+        center_message_counter[0] -= 1
         draw_text(width=frame_width, height=frame_height, text="Crosswalk")
 
 
