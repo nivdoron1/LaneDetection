@@ -9,11 +9,10 @@ import LaneLineHistory
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 # Main video processing loop
 
-video_file = 'car_driving_short.mp4'
+video_file = 'car_driving_video.mp4'
 cap = cv2.VideoCapture(video_file)
-left_image = cv2.imread('arrow.png', cv2.IMREAD_UNCHANGED)
-left_image = cv2.cvtColor(left_image, cv2.COLOR_BGR2RGB)
-left_image[left_image > 240] = 0
+left_arrow = cv2.imread('left-arrow.png')
+right_arrow = cv2.imread('right-arrow.png')
 
 # Check if video opened successfully
 if not cap.isOpened():
@@ -38,14 +37,7 @@ kernel_size = 13
 
 
 def list_images(images, cols=2, rows=5, cmap=None):
-    """
-    Display a list of images in a single figure with matplotlib.
-        Parameters:
-            images: List of np.arrays compatible with plt.imshow.
-            cols (Default = 2): Number of columns in the figure.
-            rows (Default = 5): Number of rows in the figure.
-            cmap (Default = None): Used to display gray images.
-    """
+
     plt.figure(figsize=(10, 11))
     for i, image in enumerate(images):
         plt.subplot(rows, cols, i + 1)
@@ -59,11 +51,7 @@ def list_images(images, cols=2, rows=5, cmap=None):
 
 
 def RGB_color_selection(image):
-    """
-    Apply color selection to RGB images to blackout everything except for white and yellow lane lines.
-        Parameters:
-            image: An np.array compatible with plt.imshow.
-    """
+
     # White color mask
     lower_threshold = np.uint8([200, 200, 200])
     upper_threshold = np.uint8([255, 255, 255])
@@ -82,11 +70,7 @@ def RGB_color_selection(image):
 
 
 def HSV_color_selection(image):
-    """
-    Apply color selection to the HSV images to blackout everything except for white and yellow lane lines.
-        Parameters:
-            image: An np.array compatible with plt.imshow.
-    """
+
     # Convert the input image to HSV
     converted_image = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
 
@@ -134,11 +118,6 @@ def HSL_color_selection(image):
 
 
 def gray_scale(image):
-    """
-    Convert images to gray scale.
-        Parameters:
-            image: An np.array compatible with plt.imshow.
-    """
     return cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
 
 
@@ -154,11 +133,6 @@ def canny_detector(image, low_threshold=50, high_threshold=150):
 
 
 def region_selection(image):
-    """
-    Determine and cut the region of interest in the input image.
-        Parameters:
-            image: An np.array compatible with plt.imshow.
-    """
     mask = np.zeros_like(image)
     if len(image.shape) > 2:
         channel_count = image.shape[2]
@@ -177,22 +151,11 @@ def region_selection(image):
 
 
 def hough_transform(image):
-    """
-    Determine and cut the region of interest in the input image.
-        Parameters:
-            image: The output of a Canny transform.
-    """
     return cv2.HoughLinesP(image, rho=rho, theta=theta, threshold=threshold,
                            minLineLength=minLineLength, maxLineGap=maxLineGap)
 
 
 def average_slope_intercept(lines, slope_threshold=0.3):
-    """
-    Find the slope and intercept of the left and right lanes of each image.
-        Parameters:
-            lines: The output lines from Hough Transform.
-            :param slope_threshold:
-    """
     left_lines = []
     left_weights = []
     right_lines = []
@@ -264,7 +227,10 @@ def lane_lines(image, lines):
     """
     left_lane, right_lane = average_slope_intercept(lines)
     y1 = image.shape[0]
-    y2 = y1 * 0.8
+    if left_message_counter[0] > 0 or right_message_counter[0] > 0:
+        y2 = y1
+    else:
+        y2 = y1 * 0.8
     return pixel_points(y1, y2, left_lane), pixel_points(y1, y2, right_lane)
 
 
@@ -306,12 +272,29 @@ def draw_crosswalks(frame, edges):
                 center_message_counter[0] = 12
 
 
-def draw_text(width, height, text):
+def draw_text(width, text, top_margin=50):
     font = cv2.FONT_HERSHEY_SIMPLEX
     text_size = cv2.getTextSize(text, font, 1, 2)[0]
-    text_x = (width - text_size[0]) // 2
-    text_y = (height + text_size[1]) // 2
+    text_x = (width - text_size[0]) // 2  # Center the text horizontally
+    text_y = top_margin + text_size[1]  # Position the text top_margin pixels from the top
     cv2.putText(frame, text, (text_x, text_y), font, 1, (0, 255, 255), 2)
+
+
+def draw_arrow(frame, arrow_img, position):
+    """
+    Overlays an arrow image onto the frame at the specified position.
+    :param frame: The video frame.
+    :param arrow_img: The arrow image to overlay.
+    :param position: A tuple (x, y) representing the top-left corner where the arrow image will be placed.
+    """
+    # Assuming arrow_img is smaller than the frame
+    y1, y2 = position[1], position[1] + arrow_img.shape[0]
+    x1, x2 = position[0], position[0] + arrow_img.shape[1]
+
+    # Get ROI from the frame and add the arrow image to it
+    roi = frame[y1:y2, x1:x2]
+    result = cv2.addWeighted(roi, 1, arrow_img, 1, 0)
+    frame[y1:y2, x1:x2] = result
 
 
 def significant_change(previous_lane, current_lane, min_slope_threshold=89, max_slope_threshold=91):
@@ -348,7 +331,6 @@ def process_frame(frame):
 
 
 def get_average_history(left_line, right_line):
-    # If a line is not detected, use the average of the last 24 lines
     if left_line is None or right_line is None:
         avg_left_line, avg_right_line = lane_line_history.get_average_line()
         if left_line is None and avg_left_line is not None:
@@ -361,20 +343,23 @@ def get_average_history(left_line, right_line):
 
 
 def draw_text_arrow():
-    if left_message_counter[0] == 24 or right_message_counter[0] == 24:
+    if left_message_counter[0] == 72 or right_message_counter[0] == 72:
         lane_line_history.reset_history()
-
+    arrow_position_x = frame_width // 2 - right_arrow.shape[1] // 2
+    arrow_position_y = frame_height // 2 - right_arrow.shape[0] // 2
     if left_message_counter[0] > 0:
-        draw_text(frame_width, frame_height, "Left")
+        draw_arrow(frame, left_arrow, (arrow_position_x, arrow_position_y))
+        draw_text(width=frame_width, text="Left")
         left_message_counter[0] -= 1
 
     if right_message_counter[0] > 0:
-        draw_text(frame_width, frame_height, "Right")
+        draw_arrow(frame, right_arrow, (arrow_position_x, arrow_position_y))
+        draw_text(width=frame_width, text="Right")
         right_message_counter[0] -= 1
 
     if center_message_counter[0] > 0:
         center_message_counter[0] -= 1
-        draw_text(width=frame_width, height=frame_height, text="Crosswalk")
+        draw_text(width=frame_width, text="Crosswalk")
 
 
 # Define the codec and create VideoWriter object
@@ -396,14 +381,14 @@ while cap.isOpened():
             if left_line and previous_left_lane:
                 # Compare slopes and intercepts for left lane
                 if significant_change(previous_left_lane, left_line):
-                    right_message_counter[0] = 24  # Set to display message for 24 frames for left lane change
+                    right_message_counter[0] = 72
                     print(left_message_counter[0])
                     logging.info("Significant movement detected in right lane.")
 
             if right_line and previous_right_lane:
                 # Compare slopes and intercepts for right lane
                 if significant_change(previous_right_lane, right_line):
-                    left_message_counter[0] = 24  # Set to display message for 24 frames for right lane change
+                    left_message_counter[0] = 72
                     print(right_message_counter[0])
                     logging.info("Significant movement detected in left lane.")
 
