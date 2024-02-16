@@ -7,14 +7,12 @@ import logging
 import LaneLineHistory
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-# Main video processing loop
 
 video_file = 'car_driving_video.mp4'
 cap = cv2.VideoCapture(video_file)
 left_arrow = cv2.imread('left-arrow.png')
 right_arrow = cv2.imread('right-arrow.png')
 
-# Check if video opened successfully
 if not cap.isOpened():
     print("Error opening video file")
 
@@ -37,11 +35,16 @@ kernel_size = 13
 
 
 def list_images(images, cols=2, rows=5, cmap=None):
-
+    """
+    Displays a list of images in a grid format.
+    :param images: List of images to display.
+    :param cols: Number of columns in the grid.
+    :param rows: Number of rows in the grid.
+    :param cmap: Colormap to use for displaying images.
+    """
     plt.figure(figsize=(10, 11))
     for i, image in enumerate(images):
         plt.subplot(rows, cols, i + 1)
-        # Use gray scale color map if there is only one channel
         cmap = 'gray' if len(image.shape) == 2 else cmap
         plt.imshow(image, cmap=cmap)
         plt.xticks([])
@@ -50,89 +53,45 @@ def list_images(images, cols=2, rows=5, cmap=None):
     plt.show()
 
 
-def RGB_color_selection(image):
-
-    # White color mask
-    lower_threshold = np.uint8([200, 200, 200])
-    upper_threshold = np.uint8([255, 255, 255])
-    white_mask = cv2.inRange(image, lower_threshold, upper_threshold)
-
-    # Yellow color mask
-    lower_threshold = np.uint8([0, 0, 200])
-    upper_threshold = np.uint8([255, 255, 255])
-    yellow_mask = cv2.inRange(image, lower_threshold, upper_threshold)
-
-    # Combine white and yellow masks
-    mask = cv2.bitwise_or(white_mask, yellow_mask)
-    masked_image = cv2.bitwise_and(image, image, mask=mask)
-
-    return masked_image
-
-
-def HSV_color_selection(image):
-
-    # Convert the input image to HSV
-    converted_image = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
-
-    # White color mask
-    lower_threshold = np.uint8([0, 0, 210])
-    upper_threshold = np.uint8([255, 30, 255])
-    white_mask = cv2.inRange(converted_image, lower_threshold, upper_threshold)
-
-    # Yellow color mask
-    lower_threshold = np.uint8([0, 0, 200])
-    upper_threshold = np.uint8([30, 255, 255])
-    yellow_mask = cv2.inRange(converted_image, lower_threshold, upper_threshold)
-
-    # Combine white and yellow masks
-    mask = cv2.bitwise_or(white_mask, yellow_mask)
-    masked_image = cv2.bitwise_and(image, image, mask=mask)
-
-    return masked_image
-
-
 def HSL_color_selection(image):
     """
-    Apply color selection to the HSL images to blackout everything except for white and yellow lane lines.
-        Parameters:
-            image: An np.array compatible with plt.imshow.
+    Filters the image to only include white and yellow colors using HSL color space.
+    :param image: The input image.
+    :return: The image with only white and yellow colors.
     """
-    # Convert the input image to HSL
     converted_image = cv2.cvtColor(image, cv2.COLOR_RGB2HLS)
 
-    # White color mask
     lower_threshold = np.uint8([0, 200, 0])
     upper_threshold = np.uint8([255, 255, 255])
     white_mask = cv2.inRange(converted_image, lower_threshold, upper_threshold)
 
-    # Yellow color mask
     lower_threshold = np.uint8([10, 0, 100])
     upper_threshold = np.uint8([40, 255, 255])
     yellow_mask = cv2.inRange(converted_image, lower_threshold, upper_threshold)
 
-    # Combine white and yellow masks
     mask = cv2.bitwise_or(white_mask, yellow_mask)
     masked_image = cv2.bitwise_and(image, image, mask=mask)
 
     return masked_image
 
 
-def gray_scale(image):
-    return cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-
-
 def canny_detector(image, low_threshold=50, high_threshold=150):
     """
-    Apply Canny Edge Detection algorithm to the input image.
-        Parameters:
-            image: An np.array compatible with plt.imshow.
-            low_threshold (Default = 50).
-            high_threshold (Default = 150).
+    Applies the Canny edge detector to an image.
+    :param image: The input image.
+    :param low_threshold: The low threshold for the hysteresis procedure.
+    :param high_threshold: The high threshold for the hysteresis procedure.
+    :return: A binary image showing the detected edges.
     """
     return cv2.Canny(image, low_threshold, high_threshold)
 
 
 def region_selection(image):
+    """
+    Applies a mask to the input image to focus on the region of interest.
+    :param image: The input image.
+    :return: The image with mask applied.
+    """
     mask = np.zeros_like(image)
     if len(image.shape) > 2:
         channel_count = image.shape[2]
@@ -151,11 +110,22 @@ def region_selection(image):
 
 
 def hough_transform(image):
+    """
+    Detects lines in an image using the Probabilistic Hough Transform.
+    :param image: The input image after edge detection.
+    :return: An array of lines detected.
+    """
     return cv2.HoughLinesP(image, rho=rho, theta=theta, threshold=threshold,
                            minLineLength=minLineLength, maxLineGap=maxLineGap)
 
 
 def average_slope_intercept(lines, slope_threshold=0.3):
+    """
+    Averages and categorizes lines into two groups: left and right lanes.
+    :param lines: Lines detected by the Hough transform.
+    :param slope_threshold: Slope threshold to filter out nearly horizontal lines.
+    :return: The average lines for the left and right lanes.
+    """
     left_lines = []
     left_weights = []
     right_lines = []
@@ -190,23 +160,13 @@ def average_slope_intercept(lines, slope_threshold=0.3):
     return get_average_history(left_lane, right_lane)
 
 
-def fix_slope_lines(left_slope, right_slope, left_lane, right_lane, slope_threshold=0.3):
-    if abs(left_slope - right_slope) > slope_threshold:
-        left_lane = None  # Discard left lane if slope difference exceeds threshold
-        left_lane, right_lane = get_average_history(left_lane, right_lane)
-        if abs(left_slope - right_slope) > slope_threshold:
-            right_lane = None
-        else:
-            return left_lane, right_lane
-
-
 def pixel_points(y1, y2, line):
     """
-    Converts the slope and intercept of each line into pixel points.
-        Parameters:
-            y1: y-value of the line's starting point.
-            y2: y-value of the line's end point.
-            line: The slope and intercept of the line.
+    Converts a line represented by slope and intercept into pixel points.
+    :param y1: The y-coordinate of the first point.
+    :param y2: The y-coordinate of the second point.
+    :param line: The line represented as (slope, intercept).
+    :return: Two points that define the line in the image.
     """
     if line is None:
         return None
@@ -220,10 +180,10 @@ def pixel_points(y1, y2, line):
 
 def lane_lines(image, lines):
     """
-    Create full length lines from pixel points.
-        Parameters:
-            image: The input test image.
-            lines: The output lines from Hough Transform.
+    Generates full-length lines from the segmented lines detected by Hough Transform.
+    :param image: The input image.
+    :param lines: The lines detected by the Hough Transform.
+    :return: Endpoints of the averaged left and right lane lines.
     """
     left_lane, right_lane = average_slope_intercept(lines)
     y1 = image.shape[0]
@@ -236,12 +196,12 @@ def lane_lines(image, lines):
 
 def draw_lane_lines(image, lines, color=None, thickness=12):
     """
-    Draw lines onto the input image.
-        Parameters:
-            image: The input test image.
-            lines: The output lines from Hough Transform.
-            color (Default = red): Line color.
-            thickness (Default = 12): Line thickness.
+    Draws lines on an image.
+    :param image: The input image.
+    :param lines: Lines to draw.
+    :param color: Line color.
+    :param thickness: Line thickness.
+    :return: Image with lines drawn.
     """
     if color is None:
         color = [0, 0, 255]
@@ -252,17 +212,115 @@ def draw_lane_lines(image, lines, color=None, thickness=12):
     return cv2.addWeighted(image, 1.0, line_image, 1.0, 0.0)
 
 
+def has_wheels_within_contour(contour, frame):
+    """
+    Determines if there are circular shapes within a given contour that might represent wheels.
+
+    :param contour: A single contour to analyze.
+    :param frame: The frame from which the contour was extracted.
+    :return: A boolean value indicating the presence of circular shapes within the contour.
+    """
+    x, y, w, h = cv2.boundingRect(contour)
+    roi = frame[y:y + h, x:x + w]
+
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+
+    circles = cv2.HoughCircles(gray, cv2.HOUGH_GRADIENT, dp=1.2, minDist=50,
+                               param1=100, param2=30, minRadius=10, maxRadius=40)
+
+    return circles is not None
+
+
+def filter_contours_for_vehicles(contours, frame_height, frame, min_area=5000, max_area=30000,
+                                 aspect_ratio_range=(0.8, 3.5), min_y_position=0.1, max_y_position=0.8):
+    """
+     Filters detected contours to identify potential vehicles based on area, aspect ratio, and position in the frame.
+
+     :param contours: Contours detected in the frame.
+     :param frame_height: The height of the frame, used for position-based filtering.
+     :param frame: The current video frame.
+     :param min_area: Minimum area of a contour to be considered a potential vehicle.
+     :param max_area: Maximum area of a contour to be considered a potential vehicle.
+     :param aspect_ratio_range: Acceptable aspect ratio range for contours to be considered.
+     :param min_y_position: Minimum relative y position (as a fraction of frame height) for a contour to be considered.
+     :param max_y_position: Maximum relative y position (as a fraction of frame height) for a contour to be considered.
+     :return: A list of contours that are likely to represent vehicles.
+     """
+    vehicle_contours = []
+    for contour in contours:
+        if has_wheels_within_contour(contour, frame):
+            continue  # Skip contours where wheels are detected
+        x, y, w, h = cv2.boundingRect(contour)
+        area = w * h
+        aspect_ratio = float(w) / h
+        relative_y_position = y / frame_height
+        if (min_area < area < max_area and
+                aspect_ratio_range[0] < aspect_ratio < aspect_ratio_range[1] and
+                min_y_position < relative_y_position < max_y_position):
+            vehicle_contours.append(contour)
+    return vehicle_contours
+
+
+def draw_vehicle_proximity(frame, contours):
+    """
+    Draws bounding boxes around detected vehicles and labels them.
+
+    :param frame: The video frame on which to draw the bounding boxes.
+    :param contours: The contours that represent detected vehicles.
+    """
+    for contour in contours:
+        x, y, w, h = cv2.boundingRect(contour)
+        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255), 2)
+        cv2.putText(frame, "Vehicle", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+
+
+def vehicle_detection(frame):
+    """
+    Processes the lower half of the frame to detect vehicles, applies morphological transformations,
+    finds contours, filters them for potential vehicles, and draws bounding boxes around them.
+
+    :param frame: The current video frame to process.
+    :return: The video frame with vehicle detections drawn on the lower half.
+    """
+    frame_height = frame.shape[0]
+    lower_half_frame = frame[frame_height // 2:, :]
+
+    hsv = cv2.cvtColor(lower_half_frame, cv2.COLOR_BGR2HSV)
+    lower_white = np.array([0, 0, 168], dtype=np.uint8)
+    upper_white = np.array([172, 111, 255], dtype=np.uint8)
+
+    mask = cv2.inRange(hsv, lower_white, upper_white)
+
+    result = cv2.bitwise_and(lower_half_frame, lower_half_frame, mask=mask)
+
+    kernel = np.ones((5, 5), np.uint8)
+    closing = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+    contours, _ = cv2.findContours(closing, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+
+    vehicle_contours = filter_contours_for_vehicles(contours, lower_half_frame.shape[0], frame, min_y_position=0.2)
+
+    draw_vehicle_proximity(lower_half_frame, vehicle_contours)
+
+    frame[frame_height // 2:, :] = lower_half_frame
+
+    return frame
+
+
 def draw_crosswalks(frame, edges):
+    """
+    Detects and draws crosswalks on the frame based on edges.
+    :param frame: The current video frame.
+    :param edges: The edge-detected image.
+    """
     contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
 
     height = frame.shape[0]
     max_y_from_bottom = height - 110
 
-    # Filter contours and draw them
     for contour in contours:
         x, y, w, h = cv2.boundingRect(contour)
 
-        # Check if the contour is within the desired height
         if y + h >= max_y_from_bottom:
             epsilon = 0.1 * cv2.arcLength(contour, True)
             approx = cv2.approxPolyDP(contour, epsilon, True)
@@ -273,6 +331,12 @@ def draw_crosswalks(frame, edges):
 
 
 def draw_text(width, text, top_margin=50):
+    """
+    Draws text centered on the frame.
+    :param width: The width of the frame.
+    :param text: The text to draw.
+    :param top_margin: The top margin from the frame's top edge.
+    """
     font = cv2.FONT_HERSHEY_SIMPLEX
     text_size = cv2.getTextSize(text, font, 1, 2)[0]
     text_x = (width - text_size[0]) // 2  # Center the text horizontally
@@ -287,11 +351,9 @@ def draw_arrow(frame, arrow_img, position):
     :param arrow_img: The arrow image to overlay.
     :param position: A tuple (x, y) representing the top-left corner where the arrow image will be placed.
     """
-    # Assuming arrow_img is smaller than the frame
     y1, y2 = position[1], position[1] + arrow_img.shape[0]
     x1, x2 = position[0], position[0] + arrow_img.shape[1]
 
-    # Get ROI from the frame and add the arrow image to it
     roi = frame[y1:y2, x1:x2]
     result = cv2.addWeighted(roi, 1, arrow_img, 1, 0)
     frame[y1:y2, x1:x2] = result
@@ -299,7 +361,12 @@ def draw_arrow(frame, arrow_img, position):
 
 def significant_change(previous_lane, current_lane, min_slope_threshold=89, max_slope_threshold=91):
     """
-    Determine if there's a significant change in lane position.
+    Determines if there is a significant change between the previous and current lane detections.
+    :param previous_lane: The previous lane detection.
+    :param current_lane: The current lane detection.
+    :param min_slope_threshold: Minimum slope change threshold.
+    :param max_slope_threshold: Maximum slope change threshold.
+    :return: Boolean indicating if there is a significant change.
     """
     if previous_lane[0] and current_lane[0]:
         prev_slope, prev_intercept = previous_lane[0]
@@ -313,37 +380,45 @@ def significant_change(previous_lane, current_lane, min_slope_threshold=89, max_
 
 def process_frame(frame):
     """
-    Process a single video frame to detect lane lines.
-        Parameters:
-            frame: A single video frame.
+    Processes a video frame and applies lane detection and drawing routines.
+    :param frame: The video frame to process.
+    :return: The processed frame with lane markings.
     """
     color_select = HSL_color_selection(frame)
-    gray = gray_scale(color_select)
+    gray = cv2.cvtColor(color_select, cv2.COLOR_RGB2GRAY)
     smooth = cv2.GaussianBlur(gray, (kernel_size, kernel_size), 0)
     edges = canny_detector(smooth)
     region = region_selection(edges)
     hough = hough_transform(region)
-    my_lines = lane_lines(frame, hough)
+    lines = lane_lines(frame, hough)
     draw_crosswalks(frame, edges)
     draw_text_arrow()
-    result = draw_lane_lines(frame, my_lines)
-    return result, my_lines
+    result = draw_lane_lines(frame, lines)
+    return result, lines
 
 
 def get_average_history(left_line, right_line):
+    """
+    Averages line history to smooth the lane detection over time.
+    :param left_line: The current left lane line.
+    :param right_line: The current right lane line.
+    :return: The averaged left and right lane lines.
+    """
     if left_line is None or right_line is None:
         avg_left_line, avg_right_line = lane_line_history.get_average_line()
         if left_line is None and avg_left_line is not None:
             left_line = avg_left_line
         if right_line is None and avg_right_line is not None:
             right_line = avg_right_line
-    # Update the history
     lane_line_history.add_line(left_line, right_line)
     return left_line, right_line
 
 
 def draw_text_arrow():
-    if left_message_counter[0] == 72 or right_message_counter[0] == 72:
+    """
+    Determines the text and arrow direction to display based on the message counters.
+    """
+    if left_message_counter[0] == 85 or right_message_counter[0] == 85:
         lane_line_history.reset_history()
     arrow_position_x = frame_width // 2 - right_arrow.shape[1] // 2
     arrow_position_y = frame_height // 2 - right_arrow.shape[0] // 2
@@ -362,7 +437,6 @@ def draw_text_arrow():
         draw_text(width=frame_width, text="Crosswalk")
 
 
-# Define the codec and create VideoWriter object
 fourcc = cv2.VideoWriter_fourcc(*'XVID')
 out = cv2.VideoWriter('output.avi', fourcc, 20.0, (frame_width, frame_height))
 left_message_counter = [0]  # Use list to pass by reference
@@ -371,36 +445,29 @@ center_message_counter = [0]
 while cap.isOpened():
     ret, frame = cap.read()
     if ret:
-        # Process the frame
         processed_frame, lines = process_frame(frame)
-        # Conditionally draw text based on message counters right before displaying or writing the frame
 
         left_line, right_line = lines
-
-        if frame_counter > 0:  # Skip comparison for the first frame
+        processed_frame = vehicle_detection(processed_frame)
+        if frame_counter > 0:
             if left_line and previous_left_lane:
-                # Compare slopes and intercepts for left lane
                 if significant_change(previous_left_lane, left_line):
-                    right_message_counter[0] = 72
+                    right_message_counter[0] = 85
                     print(left_message_counter[0])
                     logging.info("Significant movement detected in right lane.")
 
             if right_line and previous_right_lane:
-                # Compare slopes and intercepts for right lane
                 if significant_change(previous_right_lane, right_line):
-                    left_message_counter[0] = 72
+                    left_message_counter[0] = 85
                     print(right_message_counter[0])
                     logging.info("Significant movement detected in left lane.")
 
         previous_left_lane, previous_right_lane = left_line, right_line
         frame_counter += 1
-        # Write the frame into the output file
         out.write(processed_frame)
 
-        # Display the resulting frame
         cv2.imshow('Frame', processed_frame)
 
-        # Press Q on keyboard to exit
         if cv2.waitKey(25) & 0xFF == ord('q'):
             break
     else:
@@ -410,5 +477,4 @@ while cap.isOpened():
 cap.release()
 out.release()
 
-# Closes all the frames
 cv2.destroyAllWindows()
